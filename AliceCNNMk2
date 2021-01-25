@@ -1,0 +1,140 @@
+import logging
+logging.basicConfig(level=logging.INFO)
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
+import h5py
+import numpy as np
+import csv
+import os
+import pandas as pd
+from astropy.io import fits
+
+# To run in HYDRA:
+# First use command: export PATH=/usr/local/anaconda3/bin:$PATH
+# To run with a logging file, use nohup python CNNScriptMk2.py & 
+
+######################### Organising the Data #########################
+
+# Read Stellar Assembly hdf5 file and write data to a csv file
+def hdf5ToCsv(filename = './stellar_assembly.hdf5', data=('StellarMassExSitu', 'StellarMassInSitu', 'StellarMassTotal'), csvFileName='inSituExSituTot.csv', show_log=False):
+    f = h5py.File(filename, 'r')
+    snapshots = f.keys() 
+    snap_99 = f['Snapshot_99']
+    data_lists = []
+    for d in data:
+         data_lists.append(np.array(snap_99[d]))
+    # Values in list: ['StellarMassAfterInfall', 'StellarMassBeforeInfall', 'StellarMassExSitu', 'StellarMassFormedOutsideGalaxies', 'StellarMassFromCompletedMergers', 'StellarMassFromCompletedMergersMajor', 'StellarMassFromCompletedMergersMajorMinor', 'StellarMassFromFlybys', 'StellarMassFromFlybysMajor', 'StellarMassFromFlybysMajorMinor', 'StellarMassFromOngoingMergers', 'StellarMassFromOngoingMergersMajor', 'StellarMassFromOngoingMergersMajorMinor', 'StellarMassInSitu', 'StellarMassTotal']
+    f.close()
+    exSitu, inSitu, totMass = data_lists
+
+    # Write Index, Ex Situ, In Situ, and Total Mass to csv file (index=subhalo id num)
+    with open (csvFileName, 'w') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['Index', 'ExSitu', 'InSitu', 'Tot'])
+        for index, exSituVal in enumerate(exSitu):
+            writer.writerow([index, exSituVal, inSitu[index], totMass[index]])
+
+    if show_log == True:
+        logging.info('First entry for exSitu, inSitu, and totMass: ', exSitu[0], inSitu[0], totMass[0])
+        logging.info('Created CSV File with {} entries'.format(len(exSitu))) # 4371211 entries
+
+    return csvFileName
+
+# Create a csv file of filenames and esmf only for files in image directory
+def esmfFlags(dataCSV='inSituExSituTot.csv', imgDirPath='Images', show_log=False):
+    # Load csv into a pandas dataframe
+    stellarAssembly = pd.read_csv(dataCSV, index_col='Index')
+    if show_log == True:
+        logging.info('stellarAssembly Database columns: {}'.format(stellarAssembly.columns))
+        logging.info('Type of stellarAssembly index values: {}'.format(type(stellarAssembly.index[0])))
+        logging.info('First row of stellarAssembly data: \n{}'.format(stellarAssembly.loc[0]))
+
+    # Retrieve subhalo IDs of images in image directory
+    filenames = os.listdir(imgDir)
+    imgDirIDs = [int(''.join([c for c in filename if c.isdigit()])) for filename in filenames]
+    if show_log == True:
+        logging.info('First 10 IDs from Image directory: {}'.format(imgDirIDs[:10]))
+        logging.info('Type of first ID from Image directory: {}'.format(type(imgDirIDs[0])))
+    
+    # Filter dataframe to include only subhalos corresponding to ones in image directory
+    stellarAssemblyFiltered = stellarAssembly.loc[imgDirIDs]
+    if show_log == True:    
+        logging.info('Filtered stellarAssembly dataframe created')
+
+    # Create new column containing ESMF
+    stellarAssemblyFiltered['ESMF'] = stellarAssemblyFiltered['ExSitu']/stellarAssemblyFiltered['Tot']
+    if show_log == True:
+        # logging.info('Filtered stellarAssembly with ESMF: \n{}'.format(stellarAssemblyFiltered))
+        pass
+
+    # Assign flags based on ESMF 
+    # 0 : ESMF <= 1
+    # 1 : 1 < ESMF < 0.9
+    # 2 : ESMF >= 0.9
+    esmfFlagDict = {0: 0.1,
+                    1: 0.4,
+                    2: 1 }
+        
+    stellarAssemblyFiltered.loc[stellarAssemblyFiltered['ESMF']<=esmfFlagDict[0], 'esmfFlag'] = 0
+
+    stellarAssemblyFiltered.loc[(stellarAssemblyFiltered['ESMF']>esmfFlagDict[0]) & (stellarAssemblyFiltered['ESMF']<esmfFlagDict[1]), 'esmfFlag'] = 1
+
+    stellarAssemblyFiltered.loc[stellarAssemblyFiltered['ESMF']>=esmfFlagDict[1], 'esmfFlag'] = 2
+
+    if show_log == True:
+        # logging.info('stellarAssembly wih flags: \n{}'.format(stellarAssemblyFiltered))
+        logging.info('Flags assigned with following bounds:\nRegion 0: ESMF <= {}\nRegion 1: {} < ESMF < {}\nRegion 2: ESMF >= {}'.format(esmfFlagDict[0], esmfFlagDict[0], esmfFlagDict[1], esmfFlagDict[1]))
+        count0flags = len((stellarAssemblyFiltered.loc[stellarAssemblyFiltered['esmfFlag']==0]))
+        count1flags = len((stellarAssemblyFiltered.loc[stellarAssemblyFiltered['esmfFlag']==1]))
+        count2flags = len((stellarAssemblyFiltered.loc[stellarAssemblyFiltered['esmfFlag']==2]))
+        logging.info('Number of Subhalos in:\nRegion 0: {}\nRegion 1: {}\nRegion 2: {}'.format(count0flags, count1flags, count2flags))
+
+    # Write subhalo Id, ESMF and ESMF Flag to csv file
+    stellarAssemblyFiltered[['ESMF', 'esmfFlag']].to_csv('esmfFlags.csv')
+
+    return stellarAssemblyFiltered
+
+def createESMFDataset(esmfFlagsCSV, imgDirPath, show_log=False):
+    esmfFlags = pd.read_csv(esmfFlagsCSV, index_col='Index') # Index = subhalo ID
+
+    if show_log == True:
+        logging.info('Subhalos in {}: {}'.format(esmfFlagsCSV, len(esmfFlags.index)))
+
+    #Find shape of first fits file in directory:
+    exampleFits = fits.getdata(imgDirPath+'/'+'processed_broadband_{}.fits'.format(esmfFlags.index[0]))
+    exampleShape = np.shape(exampleFits)
+
+    # Make empty arrays with correct shape
+    subhaloData = np.zeros(shape=(len(esmfFlags.index), exampleShape[0], exampleShape[1], exampleShape[2]))
+    subhaloLabels = np.zeros(shape=(len(esmfFlags.index)))
+    subhaloIDs = np.zeros(shape=(len(esmfFlags.index)))
+
+    for i, subhaloID in enumerate(esmfFlags.index):
+        # Retrieve data and label for subhalo
+        filename = 'processed_broadband_{}.fits'.format(subhaloID)
+        data = fits.getdata(imgDirPath+'/'+filename)
+        label = esmfFlags['esmfFlag'][subhaloID]
+
+        # Write data, label, and ID to arrays
+        subhaloData[i] = data
+        subhaloLabels[i] = label
+        subhaloIDs[i] = subhaloID
+    
+        
+    if show_log == True:
+        logging.info('Image data shape: {}'.format(subhaloData.shape))
+        logging.info('Length of data: {}'.format(len(subhaloData)))
+
+    return subhaloData, subhaloLabels, subhaloIDs
+
+
+
+if __name__ == '__main__':
+    logging.info('################## Start of Script {} ##################'.format(__file__))
+    # stellarAssemblyCSVFile = hdf5ToCsv(show_log=True) # inSituExSituTot.csv
+    # esmfFlags = esmfFlags(show_log=False)
+    subhaloData, subhaloLabels, subhaloIDs = createESMFDataset('esmfFlags.csv', 'Images', show_log=True)
+
+
+    logging.info('################## Finished running {} ##################'.format(__file__))
+    
