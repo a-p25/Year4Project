@@ -1,18 +1,29 @@
+######################### Importing Packages #########################
 import logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO) # For debugging
+
 import warnings
-warnings.simplefilter(action='ignore', category=FutureWarning)
+warnings.simplefilter(action='ignore', category=FutureWarning) # Too many future warnings being annoying
+
 import h5py
 import numpy as np
 import csv
 import os
 import pandas as pd
 from astropy.io import fits
+import matplotlib
+matplotlib.use('agg') # Needed for running on hydra otherwise plt.figure() causes errors
+import matplotlib.pyplot as plt
+import tensorflow as tf
+from scipy.ndimage import rotate
+import math
 
-# To run in HYDRA:
+
+# To run in hydra:
 # First use command: export PATH=/usr/local/anaconda3/bin:$PATH
 # To run with a logging file, use nohup python CNNScriptMk2.py & 
 
+# Uses https://www.tensorflow.org/tutorials/keras/classification
 ######################### Organising the Data #########################
 
 # Read Stellar Assembly hdf5 file and write data to a csv file
@@ -94,20 +105,20 @@ def esmfFlags(dataCSV='inSituExSituTot.csv', imgDirPath='Images', show_log=False
 
     return stellarAssemblyFiltered
 
-def createESMFDataset(esmfFlagsCSV, imgDirPath, show_log=False):
+def createESMFDataset(esmfFlagsCSV, imgDirPath, show_log=False, training_split=0.8):
     esmfFlags = pd.read_csv(esmfFlagsCSV, index_col='Index') # Index = subhalo ID
-
+    imgCount = len(esmfFlags.index)
     if show_log == True:
-        logging.info('Subhalos in {}: {}'.format(esmfFlagsCSV, len(esmfFlags.index)))
+        logging.info('Subhalos in {}: {}'.format(esmfFlagsCSV, imgCount))
 
     #Find shape of first fits file in directory:
     exampleFits = fits.getdata(imgDirPath+'/'+'processed_broadband_{}.fits'.format(esmfFlags.index[0]))
     exampleShape = np.shape(exampleFits)
 
     # Make empty arrays with correct shape
-    subhaloData = np.zeros(shape=(len(esmfFlags.index), exampleShape[0], exampleShape[1], exampleShape[2]))
-    subhaloLabels = np.zeros(shape=(len(esmfFlags.index)))
-    subhaloIDs = np.zeros(shape=(len(esmfFlags.index)))
+    subhaloData = np.zeros(shape=(imgCount, exampleShape[0], exampleShape[1], exampleShape[2]))
+    subhaloLabels = np.zeros(shape=(imgCount))
+    subhaloIDs = np.zeros(shape=(imgCount))
 
     for i, subhaloID in enumerate(esmfFlags.index):
         # Retrieve data and label for subhalo
@@ -119,22 +130,182 @@ def createESMFDataset(esmfFlagsCSV, imgDirPath, show_log=False):
         subhaloData[i] = data
         subhaloLabels[i] = label
         subhaloIDs[i] = subhaloID
+
+    trainDataLabelIDs = [subhaloData, subhaloLabels, subhaloIDs]
+    valDataLabelIDs = None
     
-        
+    # Split data into training and validation sets
+    if training_split != 1:
+        trainImgCount = round(training_split*imgCount)
+        # Lists of training and validation data
+        trainData, valData = np.split(trainDataLabelIDs[0], [trainImgCount])
+        trainLabels, valLabels = np.split(trainDataLabelIDs[1], [trainImgCount])
+        trainIDs, valIDs = np.split(trainDataLabelIDs[2], [trainImgCount])
+        trainDataLabelIDs = [trainData, trainLabels, trainIDs]
+        valDataLabelIDs = [valData, valLabels, valIDs]
+
     if show_log == True:
-        logging.info('Image data shape: {}'.format(subhaloData.shape))
-        logging.info('Length of data: {}'.format(len(subhaloData)))
+        logging.info('Image data shape: {}'.format(trainDataLabelIDs[0].shape))
+        logging.info('Length of training data: {}'.format(len(trainDataLabelIDs[0])))
+        logging.info('Length of validation data: {}'.format(len(valDataLabelIDs[0])))
 
-    return subhaloData, subhaloLabels, subhaloIDs
+    return trainDataLabelIDs, valDataLabelIDs
 
+def imageFigure(img, subhaloID=None, layer=0, augmented=False):
+    # Layer is either 0, 1, 2 or 3 (the fits images have 4 layers)
+    plt.figure()
+    plt.imshow(img[0])
+    plt.colorbar()
+    plt.grid(False)
+    if augmented == True:
+        plt.savefig('subhalo{}Layer{}Augmented.png'.format(str(subhaloID), str(layer)))
+    else:
+        plt.savefig('subhalo{}Layer{}.png'.format(str(subhaloID), str(layer)))
+
+    return None
+
+def dataAnalysis(trainData, show_log=False):
+    # Plots 1 image and shows maximum value to check they are normalised to 1
+    trainData, trainLabels, trainIDs = trainData
+    fitsImage = trainData[0]
+    label = trainLabels[0]
+    subhaloID = trainIDs[0]
+    if show_log == True:
+        logging.info('Image of Subhalo {}'.format(str(subhaloID)))
+    for i, layer in enumerate(fitsImage):
+        if show_log == True:
+            logging.info('Plotting Layer {}, with max value {}'.format(str(i), np.max(layer)))
+        plt.figure()
+        plt.imshow(fitsImage[0])
+        plt.colorbar()
+        plt.grid(False)
+        plt.savefig('ExampleFitsLayer{}_{}.png'.format(str(i), str(subhaloID)))
+
+def randomAugmentation(img, show_log=False):
+    # Rotate the image
+    if show_log == True:
+        imageFigure(img, augmented=False)
+    
+    layer0, layer1, layer2, layer3 = img
+    randomTheta = np.random.uniform(10, 360)
+
+    newlayer0 = rotate(layer0, randomTheta, reshape=False)
+    newlayer1 = rotate(layer1, randomTheta, reshape=False)
+    newlayer2 = rotate(layer2, randomTheta, reshape=False)
+    newlayer3 = rotate(layer3, randomTheta, reshape=False)
+    
+    img = [newlayer0, newlayer1, newlayer2, newlayer3]
+
+    # Flip the image
+    img = np.fliplr(img)
+
+    if show_log == True:
+        imageFigure(newImg, augmented=True)
+
+    return img
+
+def classBalancing(trainingData, validData, show_log=False):
+    trainData, trainLabels, trainIDs = trainingData
+    valData, valLabels, valIDs = validData
+    imgInputShape = np.shape(trainData[0])
+
+    countTrainFlag0 = np.sum(trainLabels == 0)  
+    countTrainFlag1 = np.sum(trainLabels == 1)  
+    countTrainFlag2 = np.sum(trainLabels == 2)  
+
+    countValFlag0 = np.sum(valLabels == 0)  
+    countValFlag1 = np.sum(valLabels == 1)  
+    countValFlag2 = np.sum(valLabels == 2)  
+
+    if show_log == True:
+        logging.info('Training set images with flag:\n0: {}\n1: {}\n2: {}'.format(countTrainFlag0, countTrainFlag1, countTrainFlag2))
+        logging.info('Validation set images with flag:\n0: {}\n1: {}\n2: {}'.format(countValFlag0, countValFlag1, countValFlag2))
+
+    # Apply data augmentation so the classes are split more equally
+
+    # Flag 1 : Training images
+    # Find difference in number of flag 0 images and flag 1 images
+    countTrainDiff1 = countTrainFlag0 - countTrainFlag1
+    countValDiff1 = countValFlag0 - countValFlag1
+
+    # Find indices of images with the correct flag
+    trainFlagIndices1 = np.where(trainLabels == 1)[0]
+    # Extend the list of indices to be longer than the number of new images that need to be made
+    increaseBy = math.ceil(countTrainDiff1/len(trainFlagIndices1))
+    originalIndices = trainFlagIndices1
+    for i in range(increaseBy-1):
+        trainFlagIndices1 = np.hstack([trainFlagIndices1, originalIndices])
+
+    if show_log == True:
+        logging.info('indices extended: {}'.format(trainFlagIndices1))
+    
+    # Create augmented images until the training set has equal numbers of images for flags 0 and 1
+    for i in range(countTrainDiff1):
+        # Retrieve original image and augment to newImg
+        img = trainData[trainFlagIndices1[i]]
+        newImg = randomAugmentation(img)
+
+        # Add new image and the corresponding label and id to the datasets
+        logging.info('trainData length: {}'.format(len(trainData)))
+        trainData = trainData+[newImg]
+        logging.info('trainData length: {}'.format(len(trainData)))
+
+
+        trainLabels.append(trainLabels[trainFlagIndices1[i]])
+        trainIDs.append(trainIDs[trainFlagIndices1[i]])
+    
+    # # Repeat for validation images with Flag 1
+    #
+
+    return None
+
+def trainNetwork(trainingData, validData, show_log=False):
+    # Unpack data
+    trainData, trainLabels, trainIDs = trainingData
+    valData, valLabels, valIDs = validData
+
+    imgInputShape = np.shape(trainData[0])
+    if show_log==True:
+        logging.info('Input image shape: {}'.format(imgInputShape))
+
+    # Create the model
+    model = tf.keras.Sequential([
+    tf.keras.layers.Flatten(input_shape=imgInputShape),
+    tf.keras.layers.Dense(128, activation='relu'),
+    tf.keras.layers.Dense(3) ]) # Number of output classes = 3
+    if show_log == True:
+        logging.info('Model created')
+
+    # Compile the model 
+    model.compile(optimizer='adam',
+              loss='sparse_categorical_crossentropy',
+              metrics=['accuracy'])
+    if show_log == True:
+        logging.info('Model compiled')
+    
+    model.summary()
+
+    model.fit(trainData, trainLabels, epochs=10)
+    if show_log == True:
+        logging.info('Model fitted')
+        logging.info('Checking model on validation set')
+
+    valLoss, valAcc = model.evaluate(valData, valLabels, verbose=2)
+    if show_log == True:
+        logging.info('Validation Loss: {}    Accuracy: {}'.format(valLoss, valAcc))
+
+    return model
 
 
 if __name__ == '__main__':
     logging.info('################## Start of Script {} ##################'.format(__file__))
+    logging.info('TensorFlow Version: {}'.format(tf.__version__))
     # stellarAssemblyCSVFile = hdf5ToCsv(show_log=True) # inSituExSituTot.csv
     # esmfFlags = esmfFlags(show_log=False)
-    subhaloData, subhaloLabels, subhaloIDs = createESMFDataset('esmfFlags.csv', 'Images', show_log=True)
-
+    trainData, valData = createESMFDataset('esmfFlags.csv', 'Images')
+    # dataAnalysis(trainData, show_log=True)
+    # trainNetwork(trainData, valData, show_log=True)
+    classBalancing(trainData, valData, show_log=True)
 
     logging.info('################## Finished running {} ##################'.format(__file__))
     
