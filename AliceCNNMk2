@@ -120,6 +120,7 @@ def createESMFDataset(esmfFlagsCSV, imgDirPath, show_log=False, training_split=0
     subhaloLabels = np.zeros(shape=(imgCount))
     subhaloIDs = np.zeros(shape=(imgCount))
 
+
     for i, subhaloID in enumerate(esmfFlags.index):
         # Retrieve data and label for subhalo
         filename = 'processed_broadband_{}.fits'.format(subhaloID)
@@ -132,6 +133,7 @@ def createESMFDataset(esmfFlagsCSV, imgDirPath, show_log=False, training_split=0
         subhaloIDs[i] = subhaloID
 
     trainDataLabelIDs = [subhaloData, subhaloLabels, subhaloIDs]
+
     valDataLabelIDs = None
     
     # Split data into training and validation sets
@@ -208,7 +210,7 @@ def classBalancing(trainingData, validData, show_log=False):
     trainData, trainLabels, trainIDs = trainingData
     valData, valLabels, valIDs = validData
     imgInputShape = np.shape(trainData[0])
-
+    trainData = np.asarray(trainData)
     countTrainFlag0 = np.sum(trainLabels == 0)  
     countTrainFlag1 = np.sum(trainLabels == 1)  
     countTrainFlag2 = np.sum(trainLabels == 2)  
@@ -223,39 +225,131 @@ def classBalancing(trainingData, validData, show_log=False):
 
     # Apply data augmentation so the classes are split more equally
 
-    # Flag 1 : Training images
+    ### Flag 1 : Training images
     # Find difference in number of flag 0 images and flag 1 images
     countTrainDiff1 = countTrainFlag0 - countTrainFlag1
-    countValDiff1 = countValFlag0 - countValFlag1
-
     # Find indices of images with the correct flag
     trainFlagIndices1 = np.where(trainLabels == 1)[0]
-    # Extend the list of indices to be longer than the number of new images that need to be made
-    increaseBy = math.ceil(countTrainDiff1/len(trainFlagIndices1))
-    originalIndices = trainFlagIndices1
-    for i in range(increaseBy-1):
-        trainFlagIndices1 = np.hstack([trainFlagIndices1, originalIndices])
 
-    if show_log == True:
-        logging.info('indices extended: {}'.format(trainFlagIndices1))
-    
-    # Create augmented images until the training set has equal numbers of images for flags 0 and 1
+    # Augment images with the correct flag until the class has enough images
     for i in range(countTrainDiff1):
+        # Use modulo to loop through the indexes for the flag
+        index = trainFlagIndices1[(i % len(trainFlagIndices1))]
+
         # Retrieve original image and augment to newImg
-        img = trainData[trainFlagIndices1[i]]
+        img = trainData[index]
         newImg = randomAugmentation(img)
 
         # Add new image and the corresponding label and id to the datasets
-        logging.info('trainData length: {}'.format(len(trainData)))
-        trainData = trainData+[newImg]
-        logging.info('trainData length: {}'.format(len(trainData)))
+        trainData = np.append(trainData , [newImg], axis=0)
+        trainLabels = np.append(trainLabels, trainLabels[index])
+        trainIDs = np.append(trainIDs, trainIDs[index])
 
+        if show_log == True:
+            # logging.info('Index in trainData: {}'.format(index))
+            # logging.info('Shape of trainData: {}'.format(np.shape(trainData)))
+            # logging.info('Shape of trainLabels: {}'.format(np.shape(trainLabels)))
+            # logging.info('Shape of trainIDs: {}'.format(np.shape(trainIDs)))
+            pass
 
-        trainLabels.append(trainLabels[trainFlagIndices1[i]])
-        trainIDs.append(trainIDs[trainFlagIndices1[i]])
+### Flag 1 : Validation images
+    # Find difference in number of flag 0 images and flag 1 images
+    countValDiff1 = countValFlag0 - countValFlag1
+    # Find indices of images with the correct flag
+    valFlagIndices1 = np.where(valLabels == 1)[0]
+
+    # Augment images with the correct flag until the class has enough images
+    for i in range(countValDiff1):
+        # Use modulo to loop through the indexes for the flag
+        index = valFlagIndices1[(i % len(valFlagIndices1))]
+
+        # Retrieve original image and augment to newImg
+        img = valData[index]
+        newImg = randomAugmentation(img)
+
+        # Add new image and the corresponding label and id to the datasets
+        valData = np.append(valData , [newImg], axis=0)
+        valLabels = np.append(valLabels, valLabels[index])
+        valIDs = np.append(valIDs, valIDs[index])
+
+        if show_log == True:
+            # logging.info('Index in valData: {}'.format(index))
+            # logging.info('Shape of valData: {}'.format(np.shape(valData)))
+            # logging.info('Shape of valLabels: {}'.format(np.shape(valLabels)))
+            # logging.info('Shape of valIDs: {}'.format(np.shape(valIDs)))
+            pass
+
+    ### Flag 2 : Training images
+    # Find difference in number of flag 0 images and flag 2 images
+    countTrainDiff2 = countTrainFlag0 - countTrainFlag2
+    # Find indices of images with the correct flag
+    trainFlagIndices2 = np.where(trainLabels == 2)[0]
+
+    # Augment images with the correct flag until the class has enough images
+    for i in range(countTrainDiff2):
+        # Use modulo to loop through the indexes for the flag
+        index = trainFlagIndices2[(i % len(trainFlagIndices2))]
+
+        # Retrieve original image and augment to newImg
+        img = trainData[index]
+        newImg = randomAugmentation(img)
+
+        # Add new image and the corresponding label and id to the datasets
+        trainData = np.append(trainData , [newImg], axis=0)
+        trainLabels = np.append(trainLabels, trainLabels[index])
+        trainIDs = np.append(trainIDs, trainIDs[index])
+
+        if show_log == True:
+            # logging.info('Index in trainData: {}'.format(index))
+            # logging.info('Shape of trainData: {}'.format(np.shape(trainData)))
+            # logging.info('Shape of trainLabels: {}'.format(np.shape(trainLabels)))
+            # logging.info('Shape of trainIDs: {}'.format(np.shape(trainIDs)))
+            pass
+
+### Flag 2 : Validation images
+    # Find difference in number of flag 0 images and flag 2 images
+    if countValFlag2 != 0:
+        countValDiff2 = countValFlag0 - countValFlag2
+        valFlagIndices2 = np.where(valLabels == 2)[0]
+    else: # No flag 2 images in validation category
+        countValDiff2 = countValFlag0
+        valFlagIndices2 = np.where(trainLabels == 2)[0] # Just use the training images again but swapped around (shouldn't be an issure when using all the images instead of just 200)
+    # Find indices of images with the correct flag
     
-    # # Repeat for validation images with Flag 1
-    #
+
+    # Augment images with the correct flag until the class has enough images
+    for i in range(countValDiff2):
+        # Use modulo to loop through the indexes for the flag
+        index = valFlagIndices2[(i % len(valFlagIndices2))]
+
+        # Retrieve original image and augment to newImg
+        img = valData[index]
+        newImg = randomAugmentation(img)
+
+        # Add new image and the corresponding label and id to the datasets
+        valData = np.append(valData , [newImg], axis=0)
+        valLabels = np.append(valLabels, valLabels[index])
+        valIDs = np.append(valIDs, valIDs[index])
+
+        if show_log == True:
+            # logging.info('Index in valData: {}'.format(index))
+            # logging.info('Shape of valData: {}'.format(np.shape(valData)))
+            # logging.info('Shape of valLabels: {}'.format(np.shape(valLabels)))
+            # logging.info('Shape of valIDs: {}'.format(np.shape(valIDs)))
+            pass
+
+
+    if show_log == True:
+        countTrainFlag0 = np.sum(trainLabels == 0)  
+        countTrainFlag1 = np.sum(trainLabels == 1)  
+        countTrainFlag2 = np.sum(trainLabels == 2)  
+
+        countValFlag0 = np.sum(valLabels == 0)  
+        countValFlag1 = np.sum(valLabels == 1)  
+        countValFlag2 = np.sum(valLabels == 2)  
+
+        logging.info('Training set images with flag:\n0: {}\n1: {}\n2: {}'.format(countTrainFlag0, countTrainFlag1, countTrainFlag2))
+        logging.info('Validation set images with flag:\n0: {}\n1: {}\n2: {}'.format(countValFlag0, countValFlag1, countValFlag2))
 
     return None
 
